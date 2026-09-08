@@ -17,6 +17,13 @@ export type AccountState = {
   role: Role;
   name: string;
   miuId: string | null;
+  /**
+   * Session revocation cut-off, as epoch ms (or null). Stored as ms rather than
+   * a Date so the value survives the cache's JSON round-trip unchanged. Every
+   * guarded request compares its token's mint time against this — see
+   * `isSessionRevoked`.
+   */
+  sessionsValidFrom: number | null;
 };
 
 // Short enough that a ban takes effect almost immediately, long enough that a
@@ -40,7 +47,7 @@ export async function getAccountState(userId: string): Promise<AccountState | nu
   if (cached) return cached === "missing" ? null : cached;
 
   await connectToDatabase();
-  const user = await User.findById(userId).select("status role name miuId").lean();
+  const user = await User.findById(userId).select("status role name miuId sessionsValidFrom").lean();
 
   if (!user) {
     // Cache the negative too — a deleted account shouldn't cause a query per request.
@@ -56,6 +63,9 @@ export async function getAccountState(userId: string): Promise<AccountState | nu
     role: user.role as Role,
     name: user.name,
     miuId: user.miuId ?? null,
+    sessionsValidFrom: user.sessionsValidFrom
+      ? new Date(user.sessionsValidFrom).getTime()
+      : null,
   };
 
   cacheSet(stateKey(userId), state, STATE_TTL_MS);

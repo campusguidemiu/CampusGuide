@@ -4,6 +4,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/server/auth";
 import { AccountStatuses } from "@/server/models/User";
 import { getAccountState, touchLastSeen } from "@/server/security/accountStatus";
+import { isSessionRevoked } from "@/lib/session";
 import { AppMain } from "@/components/AppMain";
 
 /**
@@ -19,6 +20,13 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   if (session?.user?.id) {
     const state = await getAccountState(session.user.id);
+
+    // A logged-out or password-reset session is revoked server-side even though
+    // its JWT is still valid (pentest Finding 1). The API guards already reject
+    // it; reject it here too so a captured token cannot render pages either.
+    if (state && isSessionRevoked((session as any).loginAt, state.sessionsValidFrom)) {
+      redirect("/login");
+    }
 
     // The pending screen is the one place a non-active account is allowed.
     if (!pathname.startsWith("/pending")) {

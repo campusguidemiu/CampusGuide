@@ -1,9 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getToken } from "next-auth/jwt";
 import { env } from "@/env";
+import { isRequestCsrfSafe, isUnsafeMethod } from "@/lib/csrf";
 
 function isApi(pathname: string) {
   return pathname.startsWith("/api/");
+}
+
+/** The host of NEXTAUTH_URL, if it is set, so it counts as our own origin. */
+function configuredHost(): string | null {
+  try {
+    return env.NEXTAUTH_URL ? new URL(env.NEXTAUTH_URL).host : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -50,6 +60,30 @@ export async function proxy(req: NextRequest) {
   const needsAuth = PROTECTED_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 
   if (!needsAuth) return passThrough(req);
+
+  // CSRF backstop for every state-changing request on the guarded surface. Runs
+  // before the auth check so a cross-site forgery is refused outright, whatever
+  // cookie it carried. See `lib/csrf.ts` — a browser cannot strip the Origin it
+  // attaches to a cross-site POST/PATCH/PUT/DELETE, so a forged request from
+  // another site fails to match our host and is rejected here.
+  if (isApi(pathname) && isUnsafeMethod(req.method)) {
+    const safe = isRequestCsrfSafe({
+      method: req.method,
+      origin: req.headers.get("origin"),
+      referer: req.headers.get("referer"),
+      allowedHosts: [
+        req.headers.get("host"),
+        req.headers.get("x-forwarded-host"),
+        configuredHost(),
+      ],
+    });
+    if (!safe) {
+      return new NextResponse(JSON.stringify({ error: "CSRF check failed" }), {
+        status: 403,
+        headers: { "content-type": "application/json" },
+      });
+    }
+  }
 
   const token = await getToken({ req, secret: env.NEXTAUTH_SECRET });
 

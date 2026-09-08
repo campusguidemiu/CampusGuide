@@ -15,6 +15,7 @@ import {
   validateMiuIdentity,
 } from "@/lib/miu";
 import { TERMS_VERSION } from "@/lib/terms";
+import { isRequestCsrfSafe } from "@/lib/csrf";
 
 // Messages here are shown verbatim on the register form, so they must read as
 // guidance rather than zod's internal "Too small: expected string…" text.
@@ -50,6 +51,16 @@ function bad(error: string, status = 400) {
 }
 
 export async function POST(req: Request) {
+  // CSRF backstop (pentest Finding 2). This route lives under /api/auth, which
+  // the proxy does not guard, so it carries its own same-origin check.
+  const csrfSafe = isRequestCsrfSafe({
+    method: "POST",
+    origin: req.headers.get("origin"),
+    referer: req.headers.get("referer"),
+    allowedHosts: [req.headers.get("host"), req.headers.get("x-forwarded-host")],
+  });
+  if (!csrfSafe) return bad("CSRF check failed", 403);
+
   // Stricter limits for spam-prone endpoint
   const limited = await enforceRateLimit(req.headers, "auth:register", { points: 5, duration: 60 });
   if (limited) return limited;

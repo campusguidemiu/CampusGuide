@@ -56,6 +56,24 @@ const userSchema = new Schema(
     lastIp: { type: String, index: true },
     lastUserAgent: { type: String, maxlength: 400 },
 
+    /**
+     * Server-side session revocation cut-off (see `lib/session.ts`).
+     *
+     * Stamped whenever the account logs out or resets its password. Any session
+     * token minted before this moment is refused by the request guards, even
+     * though the JWT itself is still valid and unexpired. Absent means the
+     * account has never logged out, so no token has been revoked.
+     */
+    sessionsValidFrom: { type: Date },
+
+    /**
+     * Self-service password reset. Only the SHA-256 hash of the outstanding
+     * reset token is stored, never the token itself; both are cleared the moment
+     * the token is used or a new one is issued. See `lib/resetToken.ts`.
+     */
+    resetTokenHash: { type: String },
+    resetTokenExpiresAt: { type: Date },
+
     createdAt: { type: Date, default: Date.now },
   },
   { timestamps: true }

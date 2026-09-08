@@ -2,8 +2,6 @@ import { Suspense } from "react";
 import { redirect } from "next/navigation";
 import { requireSession } from "@/server/security/requireSession";
 import { Toast } from "@/components/ui/toast";
-import { env } from "@/env";
-import { whatsappLink } from "@/lib/miu";
 import { LoginClient } from "./LoginClient";
 
 export default async function LoginPage({
@@ -37,21 +35,19 @@ export default async function LoginPage({
       </Suspense>
 
       {/*
-        There is no self-service reset: passwords are hashed and there is no mail
-        sender wired up, so an automated "reset link" would be a dead end. Saying
-        plainly who to ask is more honest than a button that cannot work.
+        Self-service reset (pentest Finding 3). Replaces the old "message me on
+        WhatsApp" flow, which left no audit trail and made the developer a
+        social-engineering target.
       */}
       <p className="mt-4 text-center text-sm text-foreground/70">
         Forgot your password?{" "}
         <a
-          href={whatsappLink(env.VERIFY_WHATSAPP_NUMBER ?? "")}
-          target="_blank"
-          rel="noreferrer"
+          href="/forgot-password"
           className="font-semibold text-primary underline-offset-4 hover:underline"
         >
-          Message me on WhatsApp
-        </a>{" "}
-        and ask me to reset it for you.
+          Reset it here
+        </a>
+        .
       </p>
     </>
   );

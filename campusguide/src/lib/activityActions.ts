@@ -8,6 +8,12 @@
 export const ActivityActions = {
   Register: "auth.register",
   SignIn: "auth.signin",
+  /** A real server-side logout: the account's sessions were revoked. */
+  SignOut: "auth.signout",
+  /** A password reset was requested (a token was issued). */
+  PasswordResetRequest: "auth.password_reset.request",
+  /** A password reset was completed and outstanding sessions were revoked. */
+  PasswordResetComplete: "auth.password_reset.complete",
 
   // Rejected sign-ins. Previously unrecorded — `authorize()` just returned
   // null — which left the most useful security signal invisible.

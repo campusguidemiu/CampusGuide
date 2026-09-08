@@ -2,6 +2,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/server/auth";
 import { AccountStatuses } from "@/server/models/User";
 import { getAccountState, touchLastSeen } from "@/server/security/accountStatus";
+import { isSessionRevoked } from "@/lib/session";
 
 type Options = {
   /**
@@ -23,6 +24,11 @@ export async function requireSession(options: Options = {}) {
 
   const state = await getAccountState(session.user.id);
   if (!state) return null;
+
+  // Server-side logout / password-reset revocation. A token minted before the
+  // account's cut-off is refused even though the JWT is still valid — this is
+  // what actually ends a session server-side, since a JWT cannot be deleted.
+  if (isSessionRevoked((session as any).loginAt, state.sessionsValidFrom)) return null;
 
   if (!options.allowAnyStatus && state.status !== AccountStatuses.Active) return null;
 

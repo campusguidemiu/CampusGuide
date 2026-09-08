@@ -140,6 +140,11 @@ export const authOptions: NextAuthOptions = {
         // cookie is issued for the ceiling either way, so this is what actually
         // decides when an unticked session stops working.
         (token as any).expiresAt = sessionExpiryFrom(Boolean((user as any).rememberMe));
+        // When this token was minted. Compared against the account's
+        // `sessionsValidFrom` cut-off on every guarded request so a logout or
+        // password reset can revoke tokens minted before it — see
+        // `isSessionRevoked` in `lib/session.ts`.
+        (token as any).loginAt = Date.now();
       }
 
       // Past its own window: strip every identity claim rather than returning
@@ -165,6 +170,9 @@ export const authOptions: NextAuthOptions = {
       // own lifetime whenever "remember me" was left unticked. Exposed so the
       // app can tell a student when they will be asked to sign in again.
       (session as any).sessionExpiresAt = (token as any).expiresAt ?? null;
+      // When the token was minted, so the request guard can test it against the
+      // account's revocation cut-off (`requireSession`).
+      (session as any).loginAt = (token as any).loginAt ?? null;
       return session;
     },
   },

@@ -1,5 +1,47 @@
 import type { NextConfig } from "next";
 
+// Application-wide security headers (pentest Finding 4). HSTS is already set by
+// Vercel's edge and is intentionally not duplicated here.
+//
+// The CSP is the involved one. Next.js injects inline bootstrap/hydration
+// scripts and styled-jsx styles with no nonce, so 'unsafe-inline' is required
+// for the app to run; dev additionally needs 'unsafe-eval' for HMR. The policy
+// still buys real protection: framing is denied, plugins/base-uri/form targets
+// are locked to the origin, and the only third-party frame allowed is YouTube's
+// no-cookie embed domain the video player uses.
+const isDev = process.env.NODE_ENV !== "production";
+
+const contentSecurityPolicy = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  // va.vercel-scripts.com serves the Vercel Web Analytics script (<Analytics />).
+  `script-src 'self' 'unsafe-inline' https://va.vercel-scripts.com${isDev ? " 'unsafe-eval'" : ""}`,
+  "style-src 'self' 'unsafe-inline'",
+  // Thumbnails come from i.ytimg.com and the R2 bucket; https: keeps future
+  // image hosts working without weakening this to allow http/mixed content.
+  "img-src 'self' data: blob: https:",
+  "font-src 'self' data:",
+  // Same-origin APIs, plus cross-origin https for the R2 download redirects.
+  "connect-src 'self' https:",
+  "frame-src https://www.youtube-nocookie.com",
+  "media-src 'self' https:",
+  "upgrade-insecure-requests",
+].join("; ");
+
+const securityHeaders = [
+  { key: "Content-Security-Policy", value: contentSecurityPolicy },
+  { key: "X-Frame-Options", value: "DENY" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  {
+    key: "Permissions-Policy",
+    value: "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+  },
+];
+
 const nextConfig: NextConfig = {
   // Reduce bandwidth: enable compression, modern image formats, and cache versioned public assets.
   compress: true,
@@ -34,6 +76,11 @@ const nextConfig: NextConfig = {
   },
   async headers() {
     return [
+      {
+        // Every route gets the security headers.
+        source: "/:path*",
+        headers: securityHeaders,
+      },
       {
         // Cache-bustable assets (rename when you change the file)
         source: "/campus-map-v3.png",

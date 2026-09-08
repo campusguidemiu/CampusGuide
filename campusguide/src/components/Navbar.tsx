@@ -2,7 +2,8 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { signOut, useSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
+import { logoutEverywhere } from "@/lib/logout";
 import {
   CalendarDays,
   ChevronDown,
@@ -288,7 +289,7 @@ export function Navbar() {
                 variant="secondary"
                 className="hidden h-10 xl:inline-flex"
                 onClick={() => {
-                  if (window.confirm(SIGN_OUT_CONFIRM)) signOut({ callbackUrl: "/" });
+                  if (window.confirm(SIGN_OUT_CONFIRM)) void logoutEverywhere("/");
                 }}
               >
                 <LogOut className="h-4 w-4" />
@@ -404,7 +405,7 @@ export function Navbar() {
                   variant="secondary"
                   className="h-11 w-full justify-start"
                   onClick={() => {
-                    if (window.confirm(SIGN_OUT_CONFIRM)) signOut({ callbackUrl: "/" });
+                    if (window.confirm(SIGN_OUT_CONFIRM)) void logoutEverywhere("/");
                   }}
                 >
                   <LogOut className="h-4 w-4" />
