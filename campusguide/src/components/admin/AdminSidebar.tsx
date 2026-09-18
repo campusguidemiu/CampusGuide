@@ -5,6 +5,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { logoutEverywhere } from "@/lib/logout";
+import { useVisiblePoll } from "@/lib/useVisiblePoll";
 import {
   Activity,
   ArrowLeft,
@@ -180,27 +181,19 @@ function SidebarBody({ pending, alerts, onNavigate }: { pending: number; alerts:
 function usePendingCount() {
   const [pending, setPending] = React.useState(0);
 
-  React.useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const res = await fetch("/api/admin/stats");
-        if (!res.ok) return;
-        const j = await res.json();
-        if (!cancelled) setPending(Number(j?.users?.pending ?? 0));
-      } catch {
-        // A missing badge is not worth surfacing an error for.
-      }
-    };
-
-    load();
-    const timer = window.setInterval(load, 60_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+  const load = React.useCallback(async (signal: AbortSignal) => {
+    try {
+      const res = await fetch("/api/admin/stats", { cache: "no-cache", signal });
+      if (!res.ok) return;
+      const j = await res.json();
+      setPending(Number(j?.users?.pending ?? 0));
+    } catch {
+      // A missing badge is not worth surfacing an error for, and an aborted
+      // poll lands here too.
+    }
   }, []);
+
+  useVisiblePoll(load, 60_000);
 
   return pending;
 }
@@ -212,27 +205,18 @@ function usePendingCount() {
 function useAlertCount() {
   const [count, setCount] = React.useState(0);
 
-  React.useEffect(() => {
-    let cancelled = false;
-
-    const load = async () => {
-      try {
-        const res = await fetch("/api/admin/alerts");
-        if (!res.ok) return;
-        const j = await res.json();
-        if (!cancelled) setCount(Number(j?.openCount ?? 0));
-      } catch {
-        // Same as the queue badge: a dropped poll is not worth an error.
-      }
-    };
-
-    load();
-    const timer = window.setInterval(load, 20_000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
+  const load = React.useCallback(async (signal: AbortSignal) => {
+    try {
+      const res = await fetch("/api/admin/alerts", { cache: "no-cache", signal });
+      if (!res.ok) return;
+      const j = await res.json();
+      setCount(Number(j?.openCount ?? 0));
+    } catch {
+      // Same as the queue badge: a dropped or aborted poll is not worth an error.
+    }
   }, []);
+
+  useVisiblePoll(load, 20_000);
 
   return count;
 }

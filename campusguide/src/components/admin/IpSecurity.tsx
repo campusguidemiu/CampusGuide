@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
+import { isAbortError, useVisiblePoll } from "@/lib/useVisiblePoll";
 import {
   Dialog,
   DialogContent,
@@ -359,31 +360,39 @@ export function ActiveSessionsCard({
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
-  const load = React.useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await fetch(`/api/admin/sessions?minutes=${minutes}`, { cache: "no-store" });
-      const j = await res.json().catch(() => null);
-      if (!res.ok) {
-        setError(j?.error ?? "Failed to load sessions");
-        return;
+  const load = React.useCallback(
+    async (signal: AbortSignal) => {
+      setLoading(true);
+      try {
+        // no-cache rather than no-store: every poll still reaches the server,
+        // but an unchanged window comes back as a 304 with no body.
+        const res = await fetch(`/api/admin/sessions?minutes=${minutes}`, {
+          cache: "no-cache",
+          signal,
+        });
+        const j = await res.json().catch(() => null);
+        if (!res.ok) {
+          setError(j?.error ?? "Failed to load sessions");
+          return;
+        }
+        setItems((j?.items ?? []) as SessionRow[]);
+        setSharedIps(j?.sharedIps ?? []);
+        setError(null);
+      } catch (err) {
+        // An aborted poll is this component unmounting or the window length
+        // changing, not a connection problem - saying so would be a lie.
+        if (isAbortError(err)) return;
+        setError("Network error. Check your connection and try again.");
+      } finally {
+        if (!signal.aborted) setLoading(false);
       }
-      setItems((j?.items ?? []) as SessionRow[]);
-      setSharedIps(j?.sharedIps ?? []);
-      setError(null);
-    } catch {
-      setError("Network error. Check your connection and try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, [minutes]);
+    },
+    [minutes]
+  );
 
-  React.useEffect(() => {
-    load();
-    // Refreshed on a timer so the panel is worth leaving open during an incident.
-    const timer = window.setInterval(load, 30_000);
-    return () => window.clearInterval(timer);
-  }, [load]);
+  // Refreshed on a timer so the panel is worth leaving open during an incident,
+  // but only while someone is actually looking at it.
+  useVisiblePoll(load, 30_000);
 
   return (
     <Card>

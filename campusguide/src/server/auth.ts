@@ -9,6 +9,9 @@ import { ActivityActions } from "@/server/models/ActivityLog";
 import { logActivity } from "@/server/activity";
 import { recordAuthFailure, recordSignInSuccess } from "@/server/security/alerts";
 import { isValidMiuId, normalizeMiuId } from "@/lib/miu";
+import { enforceRateLimit } from "@/server/security/rateLimit";
+import { getRequestIpFromBag } from "@/server/security/requestIp";
+import { UNKNOWN_IP } from "@/lib/ipBlocks";
 import {
   SESSION_MAX_AGE_SECONDS,
   isSessionExpired,
@@ -23,6 +26,20 @@ const credentialsSchema = z.object({
   email: z.string().min(3).max(320),
   password: z.string().min(8).max(200),
 });
+
+/**
+ * NextAuth hands `authorize` a plain object of headers rather than a Headers
+ * instance. Rebuilt here so enforceRateLimit resolves the caller address with
+ * the same rules it uses everywhere else.
+ */
+function headersFromBag(bag: Record<string, string | string[] | undefined>) {
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(bag)) {
+    if (typeof value === "string") headers.set(name, value);
+    else if (Array.isArray(value) && typeof value[0] === "string") headers.set(name, value[0]);
+  }
+  return headers;
+}
 
 export const authOptions: NextAuthOptions = {
   secret: env.NEXTAUTH_SECRET,
@@ -42,14 +59,32 @@ export const authOptions: NextAuthOptions = {
       },
       async authorize(raw, req) {
         // NextAuth hands us a bare request object here, not a fetch Headers, so
-        // the address has to be read off the plain header bag.
+        // the address has to be read off the plain header bag. Same precedence
+        // as every other route - see getRequestIpFromBag.
         const headerBag = (req?.headers ?? {}) as Record<string, string | string[] | undefined>;
-        const forwarded = headerBag["x-forwarded-for"];
-        const realIp = headerBag["x-real-ip"];
-        const ip =
-          (Array.isArray(forwarded) ? forwarded[0] : forwarded)?.split(",")[0]?.trim() ||
-          (Array.isArray(realIp) ? realIp[0] : realIp) ||
-          undefined;
+        const resolvedIp = getRequestIpFromBag(headerBag);
+        const ip = resolvedIp === UNKNOWN_IP ? undefined : resolvedIp;
+
+        // Sign-in used to be the only route in the API with no limit on it, and
+        // it is the most expensive one to call: a user lookup, a bcrypt compare
+        // that costs real CPU whether or not the password is right, an activity
+        // log write, and a count query behind the brute-force alert. Unmetered,
+        // that is both a password oracle and a way for an unauthenticated
+        // caller to burn the CPU budget.
+        //
+        // Checked before any of that work happens, and keyed on the address.
+        // enforceRateLimit applies the IP block list too, which is what keeps a
+        // blocked caller off sign-in as well.
+        //
+        // Returns null rather than the 429 Response: NextAuth expects a user or
+        // null here and surfaces anything else as a server error. The caller
+        // gets the ordinary "invalid credentials" screen, which also avoids
+        // confirming that a limit exists.
+        const limited = await enforceRateLimit(headersFromBag(headerBag), "auth:signin", {
+          points: 10,
+          duration: 60,
+        });
+        if (limited) return null;
 
         const parsed = credentialsSchema.safeParse(raw);
         if (!parsed.success) {

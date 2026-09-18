@@ -86,7 +86,7 @@ export default async function PendingPage({
             className="flex items-start gap-2.5 rounded-2xl border border-success/30 bg-success/10 px-4 py-3 text-sm font-bold text-success"
           >
             <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
-            Account created. One step left — send your ID photo to the number below.
+            Account created. One step left — send your MIU ID or your acceptance letter to the number below.
           </p>
         ) : null}
 
@@ -106,7 +106,7 @@ export default async function PendingPage({
         <div className="rounded-2xl bg-background p-5">
           <p className="flex items-center gap-2 text-base font-extrabold">
             <MessageCircle className="h-5 w-5 shrink-0 text-success" />
-            Send a photo of the FRONT of your MIU ID on WhatsApp
+            Send your MIU ID or acceptance letter on WhatsApp
           </p>
 
           {whatsapp ? (
@@ -129,7 +129,16 @@ export default async function PendingPage({
           )}
 
           <ol className="mt-5 list-decimal space-y-1.5 pl-5 text-sm text-foreground/80">
-            <li>Take a clear photo of the front of your MIU student ID card.</li>
+            <li>
+              Take a clear photo of <span className="font-semibold">either one</span>:
+              <ul className="mt-1.5 list-disc space-y-1 pl-5">
+                <li>the front of your MIU student ID card, or</li>
+                <li>your MIU acceptance letter.</li>
+              </ul>
+              <span className="mt-1.5 block text-foreground/70">
+                Whichever is easier — there is no need to send both.
+              </span>
+            </li>
             <li>
               Send it to the number above, along with your student ID{" "}
               {user.miuId ? <span className="font-semibold">({user.miuId})</span> : null}.

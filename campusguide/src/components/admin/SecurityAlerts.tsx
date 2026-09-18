@@ -6,6 +6,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Check, ShieldAlert, ShieldCheck } from "lucide-react";
+import { useVisiblePoll } from "@/lib/useVisiblePoll";
 import {
   ALERT_LABELS,
   SEVERITY_TONES,
@@ -43,35 +44,25 @@ export function SecurityAlerts() {
   const [busyId, setBusyId] = React.useState<string | null>(null);
   const [loaded, setLoaded] = React.useState(false);
 
-  const load = React.useCallback(async () => {
+  // The signal is optional because the failed-acknowledge path re-reads the
+  // list outside the poll loop, where there is nothing to abort against.
+  const load = React.useCallback(async (signal?: AbortSignal) => {
     try {
-      const res = await fetch("/api/admin/alerts");
+      // no-cache rather than no-store: still revalidated on every poll, but the
+      // server can answer 304 instead of resending an unchanged alert list.
+      const res = await fetch("/api/admin/alerts", { cache: "no-cache", signal });
       if (!res.ok) return;
       const j = await res.json();
       setAlerts((j.alerts ?? []) as Alert[]);
     } catch {
-      // A dropped poll is not worth surfacing; the next one will catch up.
+      // A dropped or aborted poll is not worth surfacing; the next one catches up.
     } finally {
       setLoaded(true);
     }
   }, []);
 
-  React.useEffect(() => {
-    void load();
-    const handle = window.setInterval(load, POLL_MS);
-
-    // Polling a background tab wastes requests for something nobody is looking
-    // at; refresh immediately when the admin comes back instead.
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void load();
-    };
-    document.addEventListener("visibilitychange", onVisible);
-
-    return () => {
-      window.clearInterval(handle);
-      document.removeEventListener("visibilitychange", onVisible);
-    };
-  }, [load]);
+  // Pauses on a hidden tab and refreshes on return - see useVisiblePoll.
+  useVisiblePoll(load, POLL_MS);
 
   async function acknowledge(id: string) {
     setBusyId(id);

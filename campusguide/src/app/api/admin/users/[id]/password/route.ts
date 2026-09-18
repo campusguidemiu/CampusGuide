@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import mongoose from "mongoose";
 import bcrypt from "bcrypt";
+import { BCRYPT_COST } from "@/server/security/passwords";
 import { connectToDatabase } from "@/server/db";
 import { User } from "@/server/models/User";
 import { ActivityActions } from "@/server/models/ActivityLog";
@@ -46,7 +47,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ id: str
 
   const password = randomPassword();
   // Cost 12, matching registration and admin-created accounts.
-  user.passwordHash = await bcrypt.hash(password, 12);
+  user.passwordHash = await bcrypt.hash(password, BCRYPT_COST);
   await user.save();
 
   /**

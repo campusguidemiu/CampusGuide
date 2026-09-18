@@ -1,5 +1,6 @@
 import { z } from "zod";
 import bcrypt from "bcrypt";
+import { BCRYPT_COST } from "@/server/security/passwords";
 import { connectToDatabase } from "@/server/db";
 import { User } from "@/server/models/User";
 import { enforceRateLimit } from "@/server/security/rateLimit";
@@ -57,7 +58,7 @@ export async function POST(req: Request) {
     return noStoreJson({ error: "This reset link is invalid or has expired." }, 400);
   }
 
-  user.passwordHash = await bcrypt.hash(parsed.data.password, 12);
+  user.passwordHash = await bcrypt.hash(parsed.data.password, BCRYPT_COST);
   // Single-use: burn the token. Set to null rather than undefined — assigning
   // undefined does not reliably unset a path on save(), which would leave the
   // token reusable for its full 30-minute window.

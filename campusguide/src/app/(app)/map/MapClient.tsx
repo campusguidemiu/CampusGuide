@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { MapPin, Search } from "lucide-react";
-import { SCHEDULE_CSV_HEADERS, SCHEDULE_CSV_TEMPLATE, parseScheduleCsv } from "@/lib/scheduleCsv";
+import { SCHEDULE_CSV_HEADERS, SCHEDULE_CSV_TEMPLATE } from "@/lib/scheduleCsvFormat";
 import { findRoomByCode, matchScheduleRooms } from "@/lib/rooms";
 
 type Room = { roomCode: string; building: string; floor: number; x: number; y: number };
@@ -88,6 +88,9 @@ export function MapClient() {
     setImporting(true);
 
     try {
+      // Loaded here rather than at module scope: the parser drags in papaparse,
+      // and the map is a page most students open without ever importing a file.
+      const { parseScheduleCsv } = await import("@/lib/scheduleCsv");
       const parsed = parseScheduleCsv(await file.text());
       if (!parsed.ok) {
         setImportMsg(parsed.error);

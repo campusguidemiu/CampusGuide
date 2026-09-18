@@ -8,37 +8,17 @@
  */
 import Papa from "papaparse";
 import { normalizeClockTime } from "./time";
+import {
+  SCHEDULE_CSV_HEADERS,
+  SCHEDULE_CSV_MAX_ROWS,
+  type ScheduleCsvResult,
+  type ScheduleImportRow,
+} from "./scheduleCsvFormat";
 
-export type ScheduleImportRow = {
-  title: string;
-  type: "lecture" | "lab";
-  dayOfWeek: "MO" | "TU" | "WE" | "TH" | "FR" | "SA" | "SU";
-  startTime: string;
-  endTime: string;
-  roomCode?: string;
-  professor?: string;
-};
-
-/** Mirrors the `rows` cap in the import route; rejecting here gives a better message. */
-export const SCHEDULE_CSV_MAX_ROWS = 200;
-
-export const SCHEDULE_CSV_HEADERS = [
-  "title",
-  "type",
-  "dayOfWeek",
-  "startTime",
-  "endTime",
-  "roomCode",
-  "professor",
-] as const;
-
-// Room codes here are real seeded rooms, so a student who imports the template
-// unchanged sees pins on the map rather than an empty one.
-export const SCHEDULE_CSV_TEMPLATE = `title,type,dayOfWeek,startTime,endTime,roomCode,professor
-Data Structures,lecture,SA,09:00,10:30,204,Dr. Ahmed Hassan
-Data Structures,lab,MO,11:00,13:00,LABK,Eng. Mona Saleh
-Linear Algebra,lecture,TU,08:00,09:30,RC1,Dr. Sara Fouad
-`;
+// Re-exported so importing the parser still hands you the whole vocabulary.
+// Anything that needs only the constants should import ./scheduleCsvFormat
+// directly - that is what keeps papaparse out of the page bundles.
+export * from "./scheduleCsvFormat";
 
 /** Header names people actually type, mapped to the field they mean. */
 const HEADER_ALIASES: Record<string, keyof ScheduleImportRow> = {
@@ -90,10 +70,6 @@ const DAYS: Record<string, ScheduleImportRow["dayOfWeek"]> = {
   sa: "SA", sat: "SA", saturday: "SA",
   su: "SU", sun: "SU", sunday: "SU",
 };
-
-export type ScheduleCsvResult =
-  | { ok: true; rows: ScheduleImportRow[]; skipped: number }
-  | { ok: false; error: string };
 
 function canonicalKey(header: string) {
   return header.replace(/^\uFEFF/, "").trim().toLowerCase().replace(/[\s_-]+/g, "");

@@ -4,7 +4,7 @@ import { connectToDatabase } from "@/server/db";
 import { requireRole } from "@/server/security/requireRole";
 import { enforceRateLimit } from "@/server/security/rateLimit";
 import { SecurityAlert } from "@/server/models/SecurityAlert";
-import { noStoreJson } from "@/server/httpCache";
+import { jsonWithEtag, noStoreJson } from "@/server/httpCache";
 import { logActivity } from "@/server/activity";
 import { ActivityActions } from "@/lib/activityActions";
 import {
@@ -108,7 +108,10 @@ export async function GET(req: Request) {
 
   const last = page[page.length - 1];
 
-  return noStoreJson(
+  // Polled every 20s by both the sidebar badge and the dashboard card, and
+  // unchanged on the overwhelming majority of those polls.
+  return jsonWithEtag(
+    req,
     {
       alerts,
       // Unchanged key: the sidebar badge and the overview card read this.
@@ -123,7 +126,7 @@ export async function GET(req: Request) {
           ? encodeAlertCursor(new Date(last.lastSeenAt).toISOString(), String(last._id))
           : null,
     },
-    200
+    { status: 200, cacheControl: "private, no-cache" }
   );
 }
 

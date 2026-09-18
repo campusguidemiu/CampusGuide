@@ -5,7 +5,7 @@ import { Resource } from "@/server/models/Resource";
 import { Folder } from "@/server/models/Folder";
 import { enforceRateLimit } from "@/server/security/rateLimit";
 import { requireRole } from "@/server/security/requireRole";
-import { noStoreJson } from "@/server/httpCache";
+import { jsonWithEtag, noStoreJson } from "@/server/httpCache";
 
 function daysAgo(days: number) {
   return new Date(Date.now() - days * 24 * 60 * 60 * 1000);
@@ -63,12 +63,18 @@ export async function GET(req: Request) {
     { $sort: { _id: 1 } },
   ]);
 
-  return noStoreJson({
-    activeUsers: { daily: dau, weekly: wau, monthly: mau },
-    users: { total: totalUsers, pending, banned, active: totalUsers - pending - banned },
-    signups: { today: newToday, thisWeek: newThisWeek },
-    content: { resources, folders },
-    actionsToday,
-    signupSeries: signupSeries.map((row: any) => ({ date: row._id as string, count: row.count as number })),
-  });
+  // Polled by the sidebar badge every 60s; the numbers rarely move between
+  // two polls, so an ETag makes most of those a 304 with no body.
+  return jsonWithEtag(
+    req,
+    {
+      activeUsers: { daily: dau, weekly: wau, monthly: mau },
+      users: { total: totalUsers, pending, banned, active: totalUsers - pending - banned },
+      signups: { today: newToday, thisWeek: newThisWeek },
+      content: { resources, folders },
+      actionsToday,
+      signupSeries: signupSeries.map((row: any) => ({ date: row._id as string, count: row.count as number })),
+    },
+    { cacheControl: "private, no-cache" }
+  );
 }

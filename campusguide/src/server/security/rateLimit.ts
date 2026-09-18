@@ -1,4 +1,7 @@
 import { RateLimiterMemory } from "rate-limiter-flexible";
+import { getRequestIp } from "@/server/security/requestIp";
+
+export { getRequestIp };
 
 type RateLimitOptions = {
   points?: number;
@@ -19,12 +22,6 @@ function getLimiter(points: number, duration: number) {
   const created = new RateLimiterMemory({ points, duration });
   limiters.set(key, created);
   return created;
-}
-
-export function getRequestIp(headers: Headers) {
-  const xff = headers.get("x-forwarded-for");
-  if (xff) return xff.split(",")[0]?.trim() ?? "unknown";
-  return headers.get("x-real-ip") ?? "unknown";
 }
 
 export async function enforceRateLimit(headers: Headers, key: string, opts?: RateLimitOptions) {

@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Plus, Loader2, CheckCircle, AlertCircle, Download } from "lucide-react";
-import { SCHEDULE_CSV_HEADERS, SCHEDULE_CSV_TEMPLATE, parseScheduleCsv } from "@/lib/scheduleCsv";
+import { SCHEDULE_CSV_HEADERS, SCHEDULE_CSV_TEMPLATE } from "@/lib/scheduleCsvFormat";
 
 export function ScheduleManager({ onUpdate }: { onUpdate: () => void }) {
     const [open, setOpen] = React.useState(false);
@@ -85,6 +85,9 @@ export function ScheduleManager({ onUpdate }: { onUpdate: () => void }) {
         setBusy(true);
 
         try {
+            // Loaded here rather than at module scope: the parser drags in
+            // papaparse, which no one needs until a file is actually chosen.
+            const { parseScheduleCsv } = await import("@/lib/scheduleCsv");
             const parsed = parseScheduleCsv(await file.text());
             if (!parsed.ok) {
                 setMsg({ type: "error", text: parsed.error });

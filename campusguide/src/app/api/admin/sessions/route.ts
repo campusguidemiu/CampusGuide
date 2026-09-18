@@ -2,7 +2,7 @@ import { connectToDatabase } from "@/server/db";
 import { User } from "@/server/models/User";
 import { enforceRateLimit } from "@/server/security/rateLimit";
 import { requireRole } from "@/server/security/requireRole";
-import { noStoreJson } from "@/server/httpCache";
+import { jsonWithEtag, noStoreJson } from "@/server/httpCache";
 
 /**
  * Who is currently using the site, and from where.
@@ -70,5 +70,6 @@ export async function GET(req: Request) {
     .map(([ip, accounts]) => ({ ip, accounts }))
     .sort((a, b) => b.accounts - a.accounts);
 
-  return noStoreJson({ items, sharedIps, windowMinutes: minutes });
+  // Polled every 30s while the panel is open - 304 on an unchanged window.
+  return jsonWithEtag(req, { items, sharedIps, windowMinutes: minutes }, { cacheControl: "private, no-cache" });
 }

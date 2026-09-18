@@ -5,6 +5,7 @@ import { enforceRateLimit } from "@/server/security/rateLimit";
 import { requireRole } from "@/server/security/requireRole";
 import { noStoreJson } from "@/server/httpCache";
 import bcrypt from "bcrypt";
+import { BCRYPT_COST } from "@/server/security/passwords";
 import { Roles } from "@/server/roles";
 import { isDuplicateKeyError } from "@/server/mongoErrors";
 import { logActivity } from "@/server/activity";
@@ -165,7 +166,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const passwordHash = await bcrypt.hash(password, BCRYPT_COST);
 
   let created;
   try {

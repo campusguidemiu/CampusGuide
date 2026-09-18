@@ -1,5 +1,6 @@
 import { z } from "zod";
 import bcrypt from "bcrypt";
+import { BCRYPT_COST } from "@/server/security/passwords";
 import { connectToDatabase } from "@/server/db";
 import { AccountStatuses, User } from "@/server/models/User";
 import { enforceRateLimit } from "@/server/security/rateLimit";
@@ -106,7 +107,7 @@ export async function POST(req: Request) {
     return bad(exists.email === email ? "Email already in use" : "Student ID already registered", 409);
   }
 
-  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
+  const passwordHash = await bcrypt.hash(parsed.data.password, BCRYPT_COST);
 
   let created;
   try {
