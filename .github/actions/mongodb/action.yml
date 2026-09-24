@@ -1,0 +1,68 @@
+name: Start a throwaway MongoDB
+description: >
+  Runs a standalone mongod on the runner from the official tarball.
+  Deliberately not a Docker service container: this project does not use Docker
+  anywhere, and a plain binary needs no daemon, no image pull and no sudo.
+
+inputs:
+  version:
+    description: MongoDB server version.
+    required: false
+    default: "8.0.4"
+  port:
+    description: Port to listen on. Give each parallel suite its own.
+    required: false
+    default: "27017"
+
+runs:
+  using: composite
+  steps:
+    - name: Restore the cached MongoDB binary
+      id: cache
+      uses: actions/cache@v4
+      with:
+        path: ~/.cache/mongodb
+        key: mongodb-${{ inputs.version }}-ubuntu2404
+
+    - name: Download MongoDB if it is not cached
+      shell: bash
+      run: |
+        set -euo pipefail
+        dir="$HOME/.cache/mongodb"
+        name="mongodb-linux-x86_64-ubuntu2404-${{ inputs.version }}"
+
+        if [ ! -x "$dir/$name/bin/mongod" ]; then
+          mkdir -p "$dir"
+          curl -fsSL "https://fastdl.mongodb.org/linux/$name.tgz" -o /tmp/mongo.tgz
+          tar -xzf /tmp/mongo.tgz -C "$dir"
+        fi
+
+        echo "$dir/$name/bin" >> "$GITHUB_PATH"
+
+    - name: Start mongod on port ${{ inputs.port }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        data="/tmp/mongo-${{ inputs.port }}"
+        mkdir -p "$data"
+
+        mongod \
+          --dbpath "$data" \
+          --port ${{ inputs.port }} \
+          --bind_ip 127.0.0.1 \
+          --fork \
+          --logpath "/tmp/mongod-${{ inputs.port }}.log"
+
+        # Wait for it to accept connections rather than sleeping a fixed amount:
+        # a fixed sleep is either wasted time or a flaky suite.
+        for _ in $(seq 1 60); do
+          if (echo > /dev/tcp/127.0.0.1/${{ inputs.port }}) >/dev/null 2>&1; then
+            echo "mongod is accepting connections on ${{ inputs.port }}"
+            exit 0
+          fi
+          sleep 1
+        done
+
+        echo "mongod did not come up; log follows" >&2
+        cat "/tmp/mongod-${{ inputs.port }}.log" >&2
+        exit 1

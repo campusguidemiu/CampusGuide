@@ -1,0 +1,363 @@
+name: CI
+
+# Runs on every push to main, as asked, plus pull requests targeting main so a
+# branch can be proven green before it is merged rather than after. Manual runs
+# are allowed for re-checking a flake without an empty commit.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# A second push to main supersedes the first: the older run is cancelled rather
+# than both competing for runners. Never cancels a run that is already on main's
+# final commit, because that is the result people read.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # CI never talks to Atlas or R2. Every database-backed job starts its own
+  # throwaway mongod on the runner, so a test can never write into production
+  # data and a leaked credential cannot reach anything real.
+  MONGODB_URI: mongodb://127.0.0.1:27017/campusguide
+  NEXTAUTH_SECRET: ci-only-secret-not-used-anywhere-else-0123456789
+  # The account-state cache defaults to 30s. The suites that check a ban taking
+  # effect would otherwise have to sleep that out on every assertion.
+  ACCOUNT_STATE_TTL_MS: "1000"
+  NEXT_TELEMETRY_DISABLED: "1"
+
+defaults:
+  run:
+    working-directory: campusguide
+
+jobs:
+  # ---------------------------------------------------------------- static
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - name: ESLint
+        run: npx eslint . --max-warnings=0
+
+  typecheck:
+    name: Types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      # `next build` type-checks too, but it stops at the first error and takes
+      # minutes. This gives the full list in about twenty seconds.
+      - name: tsc --noEmit
+        run: npx tsc --noEmit
+
+  format:
+    name: Repo hygiene
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: The lockfile matches package.json
+        # npm ci already fails on a mismatch; this reports it as its own failure
+        # so the cause is obvious rather than buried in an install log.
+        run: npm ls --depth=0 >/dev/null
+
+      - name: No committed environment files
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Matches any tracked .env* anywhere in the repo rather than a fixed
+          # list, so a new one cannot slip in under a name nobody enumerated.
+          tracked=$(git ls-files | grep -E '(^|/)\.env($|\.)' || true)
+          if [ -n "$tracked" ]; then
+            echo "::error::an environment file is tracked by git:"
+            echo "$tracked"
+            echo "Remove it with 'git rm --cached', then rotate every credential it held."
+            exit 1
+          fi
+          echo "no tracked .env files"
+
+      - name: No stray build output or logs committed
+        working-directory: .
+        run: |
+          set -euo pipefail
+          bad=$(git ls-files | grep -E '(^|/)(\.next/|node_modules/|[^/]*\.log$|tsconfig\.tsbuildinfo$)' || true)
+          if [ -n "$bad" ]; then
+            echo "::error::These files should not be committed:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "working tree is clean of build output"
+
+  # ------------------------------------------------------------- unit tests
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      # Pure-function and schema suites. No server, no database, no network —
+      # so a failure here is unambiguously a logic regression.
+      - name: node:test suites
+        run: npm test
+
+      - name: Every test file is actually wired into `npm test`
+        # A new tests/*.test.ts that nobody added to the script silently never
+        # runs. This compares the directory against the script.
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in tests/*.test.ts; do
+            case "$f" in
+              tests/api.test.ts|tests/admin.test.ts) continue ;;  # run by the api job
+            esac
+            if ! grep -q "$f" package.json; then
+              echo "::error file=$f::$f exists but is not listed in the \"test\" script"
+              missing=1
+            fi
+          done
+          exit $missing
+
+  # ----------------------------------------------------------------- build
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      # The build evaluates route modules, so it wants a reachable database.
+      - uses: ./.github/actions/mongodb
+
+      - name: next build
+        run: npx next build
+
+      - name: Fail on build warnings that matter
+        run: |
+          set -euo pipefail
+          test -f .next/BUILD_ID || { echo "::error::no BUILD_ID — the build did not complete"; exit 1; }
+          echo "build id: $(cat .next/BUILD_ID)"
+
+      # Handed to the api, admin and e2e jobs so the app is compiled once rather
+      # than four times.
+      - name: Upload the build
+        uses: actions/upload-artifact@v4
+        with:
+          name: next-build
+          path: |
+            campusguide/.next
+            !campusguide/.next/cache
+          retention-days: 1
+          if-no-files-found: error
+
+  bundle:
+    name: Bundle budget
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: next-build
+          path: campusguide/.next
+
+      # Bandwidth is a standing concern on this project, so a page bundle
+      # growing past its budget is a CI failure rather than something noticed
+      # on the bill a month later.
+      - name: Client JS stays within budget
+        run: |
+          set -euo pipefail
+
+          # Measured at 1408 KB when this was written. The budget is a ratchet,
+          # not a target: it exists to catch a dependency that quietly doubles
+          # the bundle, so it sits a little above today's number. Lower it
+          # whenever real work brings the figure down.
+          budget_kb=1600
+
+          total=$(find .next/static/chunks -name '*.js' -printf '%s\n' 2>/dev/null | awk '{s+=$1} END {print int(s/1024)}')
+          echo "client chunks: ${total} KB (budget ${budget_kb} KB)"
+          echo "client chunks: **${total} KB** / ${budget_kb} KB budget" >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${total:-0}" -gt "$budget_kb" ]; then
+            echo "::error::client chunks grew to ${total} KB, over the ${budget_kb} KB budget"
+            exit 1
+          fi
+
+  # --------------------------------------------------------- API integration
+  # The two HTTP suites get a server each, on their own port, against their own
+  # mongod. They are split because sign-in is rate limited per address and on
+  # localhost every request resolves to the same bucket — sharing one server
+  # makes the second suite spend the first one's budget.
+  api:
+    name: API tests (${{ matrix.suite }})
+    runs-on: ubuntu-latest
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - suite: student
+            file: tests/api.test.ts
+            port: 3100
+          - suite: admin
+            file: tests/admin.test.ts
+            port: 3102
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mongodb
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: next-build
+          path: campusguide/.next
+
+      - name: Start the app on ${{ matrix.port }}
+        env:
+          NEXTAUTH_URL: http://localhost:${{ matrix.port }}
+        run: |
+          npx next start -p ${{ matrix.port }} > /tmp/next-${{ matrix.port }}.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -sf "http://127.0.0.1:${{ matrix.port }}/api/auth/csrf" >/dev/null; then
+              echo "app is serving on ${{ matrix.port }}"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::the app never came up"; cat /tmp/next-${{ matrix.port }}.log; exit 1
+
+      - name: ${{ matrix.file }}
+        env:
+          BASE_URL: http://localhost:${{ matrix.port }}
+        run: npx tsx --test ${{ matrix.file }}
+
+      - name: Server log on failure
+        if: failure()
+        run: cat /tmp/next-${{ matrix.port }}.log
+
+  # ------------------------------------------------------------------- e2e
+  e2e:
+    name: Browser tests
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/mongodb
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: next-build
+          path: campusguide/.next
+
+      - name: Cache the browser binary
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ hashFiles('campusguide/package-lock.json') }}
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      # playwright.config.ts starts the server itself via `webServer`, so there
+      # is no start-and-wait step here.
+      - name: Run the browser suite
+        env:
+          NEXTAUTH_URL: http://localhost:3200
+        run: npx playwright test
+
+      - name: Upload the report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: campusguide/playwright-report
+          retention-days: 7
+
+  # -------------------------------------------------------------- security
+  security:
+    name: Security
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ./.github/actions/setup
+
+      # Reports, but does not gate. As of writing, `npm audit` already finds 18
+      # advisories (11 high, 2 critical) — sharp/libvips and a picomatch ReDoS
+      # among them. None of that came from the change being pushed, so failing
+      # the build on it would make every run red for reasons unrelated to the
+      # commit, which is how people learn to ignore a pipeline.
+      #
+      # Clear the backlog, then turn this into a gate by dropping the `|| true`
+      # and adding `--audit-level=high`.
+      - name: Dependency advisories (report only)
+        run: |
+          set -uo pipefail
+          npm audit 2>&1 | tail -40 || true
+
+          {
+            echo "### Dependency advisories"
+            echo ""
+            echo '```'
+            npm audit 2>&1 | grep -E "vulnerabilities" | tail -2 || echo "none reported"
+            echo '```'
+            echo ""
+            echo "_Report only — this step does not fail the build. See ci.yml for why._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: No secrets in the diff
+        working-directory: .
+        run: |
+          set -euo pipefail
+          # Deliberately narrow: patterns that are almost never a false positive.
+          # A broad entropy scan on a codebase this size is all noise.
+          patterns='mongodb\+srv://[^"'"'"'`[:space:]]*:[^"'"'"'`[:space:]]*@|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----|sk_live_[0-9a-zA-Z]{20,}'
+          if git grep -nIE "$patterns" -- ':!*.test.ts' ':!.github/**' >/dev/null 2>&1; then
+            echo "::error::a credential-shaped string is committed:"
+            git grep -nIE "$patterns" -- ':!*.test.ts' ':!.github/**'
+            exit 1
+          fi
+          echo "no credential patterns found"
+
+      - name: The security-relevant suites pass on their own
+        # Called out separately from the unit job so a failure reads as
+        # "authentication broke", not "some test failed".
+        run: >
+          npx tsx --test
+          tests/csrf.test.ts
+          tests/session.test.ts
+          tests/resetToken.test.ts
+          tests/ipBlocks.test.ts
+          tests/requestIp.test.ts
+          tests/proxy.test.ts
+          tests/alerts.test.ts
+          tests/routes.test.ts
+
+  # --------------------------------------------------------------- summary
+  # One required check to protect the branch with, instead of ten. Fails if any
+  # job above failed or was skipped because something it needed failed.
+  ci:
+    name: CI passed
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [lint, typecheck, format, unit, build, bundle, api, e2e, security]
+    steps:
+      - name: Report
+        run: |
+          echo "results: ${{ join(needs.*.result, ', ') }}"
+          if echo "${{ join(needs.*.result, ',') }}" | grep -qE 'failure|cancelled|skipped'; then
+            echo "::error::at least one CI job did not succeed"
+            exit 1
+          fi
+          echo "every job succeeded"

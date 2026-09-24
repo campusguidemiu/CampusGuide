@@ -1,0 +1,26 @@
+name: Setup Node and dependencies
+description: Pins the Node version, restores the npm cache, and installs from the lockfile.
+
+inputs:
+  node-version:
+    description: Node major version to use.
+    required: false
+    default: "24"
+
+runs:
+  using: composite
+  steps:
+    - name: Use Node ${{ inputs.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: npm
+        cache-dependency-path: campusguide/package-lock.json
+
+    # `npm ci` rather than `npm install`: it installs exactly what the lockfile
+    # says and fails if package.json and the lockfile disagree, so CI can never
+    # quietly test a different dependency tree than the one committed.
+    - name: Install dependencies
+      shell: bash
+      working-directory: campusguide
+      run: npm ci

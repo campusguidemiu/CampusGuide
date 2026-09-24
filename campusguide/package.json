@@ -10,8 +10,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "tsx --test tests/recurrence.test.ts tests/gpa.test.ts tests/url.test.ts tests/time.test.ts tests/scheduleCsv.test.ts tests/rooms.test.ts tests/storage.test.ts tests/miu.test.ts tests/chart.test.ts tests/teams.test.ts tests/attendance.test.ts tests/faq.test.ts tests/videoCourses.test.ts tests/usage.test.ts tests/ipBlocks.test.ts tests/campusTime.test.ts tests/alerts.test.ts tests/session.test.ts tests/proxy.test.ts tests/csrf.test.ts tests/resetToken.test.ts tests/requestIp.test.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/recurrence.test.ts tests/gpa.test.ts tests/url.test.ts tests/time.test.ts tests/scheduleCsv.test.ts tests/rooms.test.ts tests/storage.test.ts tests/miu.test.ts tests/chart.test.ts tests/teams.test.ts tests/attendance.test.ts tests/faq.test.ts tests/videoCourses.test.ts tests/usage.test.ts tests/ipBlocks.test.ts tests/campusTime.test.ts tests/alerts.test.ts tests/session.test.ts tests/proxy.test.ts tests/csrf.test.ts tests/resetToken.test.ts tests/requestIp.test.ts tests/httpCache.test.ts tests/cache.test.ts tests/flags.test.ts tests/search.test.ts tests/terms.test.ts tests/activityActions.test.ts tests/models.test.ts tests/routes.test.ts",
     "test:api": "tsx --test tests/api.test.ts tests/admin.test.ts",
+    "test:e2e": "playwright test",
     "seed": "tsx seeders/index.ts",
     "seed:rooms": "tsx scripts/seed-rooms.ts",
     "seed:rooms:zones": "tsx scripts/seed-rooms-zones.ts",
@@ -44,6 +46,7 @@
     "zod": "^4.2.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4",
     "@types/bcrypt": "^6.0.0",
     "@types/node": "^20",
