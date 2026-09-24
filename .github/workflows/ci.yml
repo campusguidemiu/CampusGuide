@@ -155,6 +155,10 @@ jobs:
           path: |
             campusguide/.next
             !campusguide/.next/cache
+          # `.next` is a dotfile, and upload-artifact skips hidden paths unless
+          # told otherwise — without this the upload finds nothing at all and
+          # fails a build that actually compiled fine.
+          include-hidden-files: true
           retention-days: 1
           if-no-files-found: error
 
@@ -169,6 +173,19 @@ jobs:
         with:
           name: next-build
           path: campusguide/.next
+
+      - name: Verify the build was restored
+        run: |
+          set -euo pipefail
+          # upload-artifact strips the leading `campusguide/.next`, so a layout
+          # change here would otherwise surface as a confusing "next start"
+          # crash three steps later.
+          test -f .next/BUILD_ID || {
+            echo "::error::.next/BUILD_ID missing after download — artifact layout changed"
+            ls -la .next 2>/dev/null || ls -la
+            exit 1
+          }
+          echo "restored build $(cat .next/BUILD_ID)"
 
       # Bandwidth is a standing concern on this project, so a page bundle
       # growing past its budget is a CI failure rather than something noticed
@@ -221,6 +238,19 @@ jobs:
           name: next-build
           path: campusguide/.next
 
+      - name: Verify the build was restored
+        run: |
+          set -euo pipefail
+          # upload-artifact strips the leading `campusguide/.next`, so a layout
+          # change here would otherwise surface as a confusing "next start"
+          # crash three steps later.
+          test -f .next/BUILD_ID || {
+            echo "::error::.next/BUILD_ID missing after download — artifact layout changed"
+            ls -la .next 2>/dev/null || ls -la
+            exit 1
+          }
+          echo "restored build $(cat .next/BUILD_ID)"
+
       - name: Start the app on ${{ matrix.port }}
         env:
           NEXTAUTH_URL: http://localhost:${{ matrix.port }}
@@ -258,6 +288,19 @@ jobs:
         with:
           name: next-build
           path: campusguide/.next
+
+      - name: Verify the build was restored
+        run: |
+          set -euo pipefail
+          # upload-artifact strips the leading `campusguide/.next`, so a layout
+          # change here would otherwise surface as a confusing "next start"
+          # crash three steps later.
+          test -f .next/BUILD_ID || {
+            echo "::error::.next/BUILD_ID missing after download — artifact layout changed"
+            ls -la .next 2>/dev/null || ls -la
+            exit 1
+          }
+          echo "restored build $(cat .next/BUILD_ID)"
 
       - name: Cache the browser binary
         uses: actions/cache@v4
@@ -354,6 +397,10 @@ jobs:
     needs: [lint, typecheck, format, unit, build, bundle, api, e2e, security]
     steps:
       - name: Report
+        # This job deliberately does not check the repository out, so the
+        # workflow-level `working-directory: campusguide` would point at a
+        # directory that does not exist and bash would fail to start.
+        working-directory: .
         run: |
           echo "results: ${{ join(needs.*.result, ', ') }}"
           if echo "${{ join(needs.*.result, ',') }}" | grep -qE 'failure|cancelled|skipped'; then
