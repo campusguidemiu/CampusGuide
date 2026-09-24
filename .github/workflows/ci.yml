@@ -30,6 +30,20 @@ env:
   # effect would otherwise have to sleep that out on every assertion.
   ACCOUNT_STATE_TTL_MS: "1000"
   NEXT_TELEMETRY_DISABLED: "1"
+  # The whole app is written for one timezone: every bit of date arithmetic —
+  # weekly recurrence, the schedule importer, the event editor's setHours() —
+  # runs in the process's *local* zone, and `server/campusTime.ts` pins the
+  # server to Africa/Cairo for exactly that reason.
+  #
+  # The server pins itself, but the test process does not, and `tests/api.test.ts`
+  # reads occurrence times back with `new Date(...).getHours()`. On a UTC runner
+  # a 10:00 class reads as 07:00 and the suite fails on a difference that is
+  # purely the harness's clock. campusTime.ts says as much itself: "Set
+  # TZ=Africa/Cairo on the host."
+  #
+  # Set for every job so CI and a developer machine in Cairo agree, and so
+  # "it passed locally" keeps meaning something.
+  TZ: Africa/Cairo
 
 defaults:
   run:
