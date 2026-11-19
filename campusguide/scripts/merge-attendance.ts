@@ -57,7 +57,13 @@ const BACKUP_FILE = "attendancecourses.canonical.json";
 const MANIFEST_FILE = "_manifest.json";
 const MAX_BACKUP_AGE_MS = 60 * 60 * 1000;
 
-type Doc = Record<string, any> & { _id: mongoose.Types.ObjectId };
+// A raw course document. The legacy lists are named so TypeScript can see a
+// Doc is a LegacyCourse (mergeLegacyTicks' argument); every field stays `any`.
+type Doc = Record<string, any> & {
+  _id: mongoose.Types.ObjectId;
+  missedLectures?: any;
+  missedLabs?: any;
+};
 type Status = "safe" | "warning" | "barred";
 const RANK: Record<Status, number> = { safe: 0, warning: 1, barred: 2 };
 
