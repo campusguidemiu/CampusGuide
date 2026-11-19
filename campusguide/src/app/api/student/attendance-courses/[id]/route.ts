@@ -7,29 +7,22 @@ import { enforceRateLimit } from "@/server/security/rateLimit";
 import { AttendanceCourse } from "@/server/models/AttendanceCourse";
 import { noStoreJson } from "@/server/httpCache";
 import {
+  ensureMerged,
+  rejectStaleClient,
+  serializeCourse,
+  type StoredCourse,
+} from "@/server/attendanceCourses";
+import {
   LIMITS,
+  courseSessions,
   normalizeCourse,
-  totalSessions,
   type AttendanceCourse as Course,
 } from "@/lib/attendance";
-
-function serialize(doc: any): Course {
-  return normalizeCourse({
-    id: String(doc._id),
-    name: doc.name,
-    weeks: doc.weeks,
-    lecturesPerWeek: doc.lecturesPerWeek,
-    hasLab: Boolean(doc.hasLab),
-    labsPerWeek: doc.labsPerWeek ?? 0,
-    missedLectures: doc.missedLectures ?? [],
-    missedLabs: doc.missedLabs ?? [],
-  });
-}
 
 const patchSchema = z
   .object({
     /**
-     * Record one session as absent or present. The client sends the state it
+     * Record one absence box as ticked or not. The client sends the state it
      * wants, not "flip it".
      *
      * This is deliberate. A "toggle" forces the server to read the current set,
@@ -37,27 +30,33 @@ const patchSchema = z
      * window loses a tick if two arrive together. `absent` maps onto a single
      * atomic $addToSet/$pull, which cannot lose anything and is idempotent, so
      * a retried or duplicated request is harmless.
+     *
+     * There is no lecture/lab `kind`: lectures and labs are one pool. Strict,
+     * so a request still carrying one is refused rather than half-applied.
      */
     set: z
       .object({
-        kind: z.enum(["lecture", "lab"]),
         index: z.number().int().min(0).max(999),
         absent: z.boolean(),
       })
+      .strict()
       .optional(),
     // Editing the course shape.
     weeks: z.number().int().min(LIMITS.weeks.min).max(LIMITS.weeks.max).optional(),
     lecturesPerWeek: z.number().int().min(LIMITS.perWeek.min).max(LIMITS.perWeek.max).optional(),
     hasLab: z.boolean().optional(),
     labsPerWeek: z.number().int().min(LIMITS.perWeek.min).max(LIMITS.perWeek.max).optional(),
-    /** Untick everything for one kind. */
-    clear: z.enum(["lecture", "lab", "both"]).optional(),
+    /** Untick every box. */
+    clear: z.literal(true).optional(),
   })
   .strict();
 
 export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const session = await requireSession();
   if (!session) return noStoreJson({ error: "Unauthorized" }, 401);
+
+  const stale = rejectStaleClient(req);
+  if (stale) return stale;
 
   // Ticking boxes is a rapid activity; budget generously but not unboundedly.
   const limited = await enforceRateLimit(req.headers, "student:attendance-courses:patch", {
@@ -76,42 +75,42 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
 
   await connectToDatabase();
 
-  const found = await AttendanceCourse.findOne({ _id: id, userId: session.user.id });
-  if (!found) return noStoreJson({ error: "Not found" }, 404);
+  const filter = { _id: id, userId: session.user.id };
+
+  // A course saved before lectures and labs were pooled is merged before
+  // anything is written to it. From then on `missed` is the only list in use.
+  if (!(await ensureMerged(filter))) return noStoreJson({ error: "Not found" }, 404);
 
   // Ticking a box takes the atomic path and returns immediately. It never
   // rewrites the whole array, so concurrent ticks cannot overwrite each other.
   if (parsed.data.set) {
-    const { kind, index, absent } = parsed.data.set;
-    const shape = serialize(found);
+    const { index, absent } = parsed.data.set;
 
-    const total =
-      kind === "lecture"
-        ? totalSessions(shape.weeks, shape.lecturesPerWeek)
-        : shape.hasLab
-          ? totalSessions(shape.weeks, shape.labsPerWeek)
-          : 0;
+    const current = await AttendanceCourse.findOne(filter).lean<StoredCourse>();
+    if (!current) return noStoreJson({ error: "Not found" }, 404);
 
-    if (index >= total) {
+    if (index >= courseSessions(serializeCourse(current))) {
       return noStoreJson({ error: "That session does not exist in this course." }, 400);
     }
 
-    const field = kind === "lecture" ? "missedLectures" : "missedLabs";
     const updated = await AttendanceCourse.findOneAndUpdate(
-      { _id: id, userId: session.user.id },
-      absent ? { $addToSet: { [field]: index } } : { $pull: { [field]: index } },
+      filter,
+      absent ? { $addToSet: { missed: index } } : { $pull: { missed: index } },
       { new: true }
-    ).lean();
+    ).lean<StoredCourse>();
 
     if (!updated) return noStoreJson({ error: "Not found" }, 404);
-    return noStoreJson({ course: serialize(updated) }, 200);
+    return noStoreJson({ course: serializeCourse(updated) }, 200);
   }
+
+  const found = await AttendanceCourse.findOne(filter);
+  if (!found) return noStoreJson({ error: "Not found" }, 404);
 
   // Work from the normalized current state, apply the change, then normalize
   // again. Read-modify-write on the document (rather than a bare $push) is what
-  // lets the session sets be re-pruned when the course shape changes in the
-  // same request.
-  const current = serialize(found);
+  // lets the absences be re-pruned when the course shape changes in the same
+  // request.
+  const current = serializeCourse(found.toObject() as StoredCourse);
   const next: Course = { ...current };
 
   if (parsed.data.weeks !== undefined) next.weeks = parsed.data.weeks;
@@ -119,8 +118,7 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   if (parsed.data.hasLab !== undefined) next.hasLab = parsed.data.hasLab;
   if (parsed.data.labsPerWeek !== undefined) next.labsPerWeek = parsed.data.labsPerWeek;
 
-  if (parsed.data.clear === "lecture" || parsed.data.clear === "both") next.missedLectures = [];
-  if (parsed.data.clear === "lab" || parsed.data.clear === "both") next.missedLabs = [];
+  if (parsed.data.clear) next.missed = [];
 
   // Re-prune: shrinking the course in this same request may have orphaned ticks.
   const clean = normalizeCourse({ ...next, id: current.id });
@@ -130,19 +128,21 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     lecturesPerWeek: clean.lecturesPerWeek,
     hasLab: clean.hasLab,
     labsPerWeek: clean.labsPerWeek,
-    missedLectures: clean.missedLectures,
-    missedLabs: clean.missedLabs,
+    missed: clean.missed,
   });
   await found.save();
 
   // Return the authoritative state so the client can reconcile rather than
   // assume its optimistic guess was right.
-  return noStoreJson({ course: serialize(found) }, 200);
+  return noStoreJson({ course: serializeCourse(found.toObject() as StoredCourse) }, 200);
 }
 
 export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const session = await requireSession();
   if (!session) return noStoreJson({ error: "Unauthorized" }, 401);
+
+  const stale = rejectStaleClient(req);
+  if (stale) return stale;
 
   const limited = await enforceRateLimit(req.headers, "student:attendance-courses:delete", {
     points: 60,

@@ -8,13 +8,14 @@ import { Badge } from "@/components/ui/badge";
 import { AlertTriangle, Check, Cloud, CloudOff, Loader2, Trash2, TriangleAlert } from "lucide-react";
 import { cn } from "@/lib/cn";
 import {
+  ATTENDANCE_API_VERSION,
+  ATTENDANCE_API_VERSION_HEADER,
   LIMITS,
   MAX_ABSENCE_PERCENT,
-
+  courseSessions,
   summarizeCourse,
   totalSessions,
   type AttendanceCourse,
-  type SessionKind,
 } from "@/lib/attendance";
 
 const LEGACY_KEY = "cg:attendance:courses:v1";
@@ -27,6 +28,17 @@ function toInt(value: string, fallback = 0) {
 }
 
 /**
+ * Every call to the attendance API carries the version header. The server
+ * refuses requests without it, which is what stops a tab opened before
+ * lectures and labs were pooled from writing in the old format.
+ */
+function attendanceApi(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set(ATTENDANCE_API_VERSION_HEADER, ATTENDANCE_API_VERSION);
+  return fetch(path, { ...init, headers });
+}
+
+/**
  * One checkbox per absence, not per week.
  *
  * A student tracks "how many of my allowed absences have I used", and does not
@@ -35,14 +47,12 @@ function toInt(value: string, fallback = 0) {
  * past that when the allowance is actually exceeded.
  */
 function AbsenceGrid({
-  kind,
   total,
   allowed,
   missed,
   disabled,
   onToggle,
 }: {
-  kind: SessionKind;
   total: number;
   allowed: number;
   missed: number[];
@@ -50,7 +60,7 @@ function AbsenceGrid({
   onToggle: (index: number) => void;
 }) {
   if (total === 0) {
-    return <p className="text-sm text-foreground/55">No {kind} sessions for this course.</p>;
+    return <p className="text-sm text-foreground/55">This course has no sessions.</p>;
   }
 
   const missedSet = new Set(missed);
@@ -88,8 +98,8 @@ function AbsenceGrid({
               onChange={() => onToggle(i)}
               aria-label={
                 overLimit
-                  ? `${kind} absence ${i + 1} — over your allowance`
-                  : `${kind} absence ${i + 1} of ${allowed} allowed`
+                  ? `Absence ${i + 1} — over your allowance`
+                  : `Absence ${i + 1} of ${allowed} allowed`
               }
             />
             <span className="truncate">
@@ -117,7 +127,7 @@ export default function AttendancePage() {
 
   const load = React.useCallback(async () => {
     try {
-      const res = await fetch("/api/student/attendance-courses");
+      const res = await attendanceApi("/api/student/attendance-courses");
       const j = await res.json().catch(() => null);
       if (!res.ok) {
         setError(j?.error ?? "Could not load your courses.");
@@ -158,13 +168,13 @@ export default function AttendancePage() {
           const lab = Boolean(c.hasLab);
           const labpw = lab ? Number(c.labsPerWeek) || 0 : 0;
 
-          // The old format stored only a count. The specific sessions are
-          // unknowable, so the first N are ticked — the totals stay correct and
-          // the student can move them if it matters.
+          // The old format stored only counts. The specific sessions are
+          // unknowable, so the first N boxes are ticked — N being the lecture
+          // and lab absences together, since they share one allowance now.
           const nLect = Math.min(Number(c.missedLectures) || 0, totalSessions(w, lpw));
           const nLab = Math.min(Number(c.missedLabs) || 0, totalSessions(w, labpw));
 
-          await fetch("/api/student/attendance-courses", {
+          await attendanceApi("/api/student/attendance-courses", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
@@ -173,8 +183,7 @@ export default function AttendancePage() {
               lecturesPerWeek: Math.min(lpw, LIMITS.perWeek.max),
               hasLab: lab,
               labsPerWeek: Math.min(labpw, LIMITS.perWeek.max),
-              missedLectures: Array.from({ length: nLect }, (_, i) => i),
-              missedLabs: Array.from({ length: nLab }, (_, i) => i),
+              missed: Array.from({ length: nLect + nLab }, (_, i) => i),
             }),
           });
         }
@@ -197,7 +206,7 @@ export default function AttendancePage() {
 
     setSaving((n) => n + 1);
     try {
-      const res = await fetch("/api/student/attendance-courses", {
+      const res = await attendanceApi("/api/student/attendance-courses", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -228,11 +237,10 @@ export default function AttendancePage() {
    * replaces the optimistic state — so a rejected or partial write can never
    * leave a tick showing that was not actually recorded.
    */
-  async function toggle(course: AttendanceCourse, kind: SessionKind, index: number) {
+  async function toggle(course: AttendanceCourse, index: number) {
     setSaving((n) => n + 1);
 
-    const key = kind === "lecture" ? "missedLectures" : "missedLabs";
-    const before = course[key];
+    const before = course.missed;
     // Decide the desired state here and send it explicitly. The server then
     // performs one atomic add/remove instead of a read-flip-write, so two fast
     // ticks cannot overwrite each other and a retry is harmless.
@@ -241,19 +249,19 @@ export default function AttendancePage() {
       ? [...before, index].sort((a, b) => a - b)
       : before.filter((i) => i !== index);
 
-    setCourses((prev) => prev.map((c) => (c.id === course.id ? { ...c, [key]: optimistic } : c)));
+    setCourses((prev) => prev.map((c) => (c.id === course.id ? { ...c, missed: optimistic } : c)));
 
     try {
-      const res = await fetch(`/api/student/attendance-courses/${course.id}`, {
+      const res = await attendanceApi(`/api/student/attendance-courses/${course.id}`, {
         method: "PATCH",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ set: { kind, index, absent } }),
+        body: JSON.stringify({ set: { index, absent } }),
       });
       const j = await res.json().catch(() => null);
 
       if (!res.ok) {
         // Put it back exactly as it was and say so loudly.
-        setCourses((prev) => prev.map((c) => (c.id === course.id ? { ...c, [key]: before } : c)));
+        setCourses((prev) => prev.map((c) => (c.id === course.id ? { ...c, missed: before } : c)));
         setError(j?.error ?? "That change was NOT saved. Check the box again.");
         return;
       }
@@ -261,7 +269,7 @@ export default function AttendancePage() {
       setCourses((prev) => prev.map((c) => (c.id === course.id ? (j.course as AttendanceCourse) : c)));
       setError(null);
     } catch {
-      setCourses((prev) => prev.map((c) => (c.id === course.id ? { ...c, [key]: before } : c)));
+      setCourses((prev) => prev.map((c) => (c.id === course.id ? { ...c, missed: before } : c)));
       setError("Network error — that change was NOT saved. Check the box again.");
     } finally {
       setSaving((n) => n - 1);
@@ -273,7 +281,7 @@ export default function AttendancePage() {
 
     setSaving((n) => n + 1);
     try {
-      const res = await fetch(`/api/student/attendance-courses/${course.id}`, { method: "DELETE" });
+      const res = await attendanceApi(`/api/student/attendance-courses/${course.id}`, { method: "DELETE" });
       if (!res.ok) {
         setError("Could not delete that course.");
         return;
@@ -321,8 +329,8 @@ export default function AttendancePage() {
         <div>
           <h1 className="text-2xl font-extrabold tracking-tight">Attendance</h1>
           <p className="text-sm text-foreground/70">
-            Tick a box for every session you missed. You are barred past {MAX_ABSENCE_PERCENT}%
-            absence; the allowance is rounded down.
+            Tick a box for every session you missed — lectures and labs count together. You are
+            barred past {MAX_ABSENCE_PERCENT}% absence; the allowance is rounded down.
           </p>
         </div>
 
@@ -435,15 +443,12 @@ export default function AttendancePage() {
       ) : (
         <div className="space-y-5">
           {courses.map((course) => {
+            // Lectures and labs share one allowance: 25% of all of them together.
             const s = summarizeCourse(course);
-            const lectureTotal = totalSessions(course.weeks, course.lecturesPerWeek);
-            const labTotal = course.hasLab ? totalSessions(course.weeks, course.labsPerWeek) : 0;
 
             // Sitting exactly on the allowance: not barred, but one more session
             // does it. Distinct from "1 left", which the badge used to conflate.
-            const atMax =
-              s.status !== "barred" &&
-              [s.lectures, ...(s.labs ? [s.labs] : [])].some((p) => p.allowed > 0 && p.remaining === 0);
+            const atMax = s.status !== "barred" && s.allowed > 0 && s.remaining === 0;
 
             return (
               <Card
@@ -500,64 +505,25 @@ export default function AttendancePage() {
                   <section className="space-y-3">
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
                       <h3 className="text-sm font-extrabold uppercase tracking-wide text-foreground/70">
-                        Lectures
+                        {course.hasLab ? "Absences · lectures + labs" : "Absences"}
                       </h3>
                       <p className="text-sm">
-                        <span className="font-extrabold">{s.lectures.missed}</span>
-                        <span className="text-foreground/55"> of {s.lectures.total} missed · </span>
-                        <span
-                          className={cn(
-                            "font-extrabold",
-                            s.lectures.barred ? "text-risk" : "text-success"
-                          )}
-                        >
-                          {s.lectures.barred
-                            ? "over the limit"
-                            : `${s.lectures.remaining} more allowed`}
+                        <span className="font-extrabold">{s.missed}</span>
+                        <span className="text-foreground/55"> of {s.total} missed · </span>
+                        <span className={cn("font-extrabold", s.barred ? "text-risk" : "text-success")}>
+                          {s.barred ? "over the limit" : `${s.remaining} more allowed`}
                         </span>
-                        <span className="text-foreground/55"> (max {s.lectures.allowed})</span>
+                        <span className="text-foreground/55"> (max {s.allowed})</span>
                       </p>
                     </div>
                     <AbsenceGrid
-                      kind="lecture"
-                      total={lectureTotal}
-                      allowed={s.lectures.allowed}
-                      missed={course.missedLectures}
+                      total={courseSessions(course)}
+                      allowed={s.allowed}
+                      missed={course.missed}
                       disabled={saving > 0}
-                      onToggle={(i) => toggle(course, "lecture", i)}
+                      onToggle={(i) => toggle(course, i)}
                     />
                   </section>
-
-                  {course.hasLab && s.labs ? (
-                    <section className="space-y-3">
-                      <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <h3 className="text-sm font-extrabold uppercase tracking-wide text-foreground/70">
-                          Labs
-                        </h3>
-                        <p className="text-sm">
-                          <span className="font-extrabold">{s.labs.missed}</span>
-                          <span className="text-foreground/55"> of {s.labs.total} missed · </span>
-                          <span
-                            className={cn(
-                              "font-extrabold",
-                              s.labs.barred ? "text-risk" : "text-success"
-                            )}
-                          >
-                            {s.labs.barred ? "over the limit" : `${s.labs.remaining} more allowed`}
-                          </span>
-                          <span className="text-foreground/55"> (max {s.labs.allowed})</span>
-                        </p>
-                      </div>
-                      <AbsenceGrid
-                        kind="lab"
-                        total={labTotal}
-                        allowed={s.labs.allowed}
-                        missed={course.missedLabs}
-                        disabled={saving > 0}
-                        onToggle={(i) => toggle(course, "lab", i)}
-                      />
-                    </section>
-                  ) : null}
                 </CardContent>
               </Card>
             );

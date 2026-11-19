@@ -519,13 +519,205 @@ test("every resource link is an absolute http(s) URL", async () => {
   }
 });
 
+// ------------------------------------- attendance: lectures + labs pooled
+
+/** What the Attendance page sends on every call; requests without it are refused. */
+function attendanceApi(path: string, init: RequestInit = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("x-attendance-version", "2");
+  if (init.body && !headers.has("content-type")) headers.set("content-type", "application/json");
+  return api(path, { ...init, headers });
+}
+
+function saveCourse(body: Record<string, unknown>) {
+  return attendanceApi("/api/student/attendance-courses", { method: "POST", body: JSON.stringify(body) });
+}
+
+function tick(id: string, index: number, absent = true) {
+  return attendanceApi(`/api/student/attendance-courses/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ set: { index, absent } }),
+  });
+}
+
+async function studentId() {
+  const user = await (await getDb()).collection("users").findOne({ email: EMAIL });
+  assert.ok(user, "the test student exists");
+  return user!._id;
+}
+
+/** A course stored exactly as the previous version stored it: two lists, no `missed`. */
+async function insertLegacyCourse(name: string, missedLectures: unknown[], missedLabs: unknown[]) {
+  const db = await getDb();
+  const now = new Date();
+  const { insertedId } = await db.collection("attendancecourses").insertOne({
+    userId: await studentId(),
+    name,
+    weeks: 12,
+    lecturesPerWeek: 2,
+    hasLab: true,
+    labsPerWeek: 1,
+    missedLectures,
+    missedLabs,
+    createdAt: now,
+    updatedAt: now,
+    __v: 0,
+  });
+  return insertedId;
+}
+
+const DLD_SHAPE = { weeks: 12, lecturesPerWeek: 2, hasLab: true, labsPerWeek: 1 };
+const upTo = (n: number) => Array.from({ length: n }, (_, i) => i);
+
 test("the attendance-courses endpoint is live again, not the 410 it used to be", async () => {
   // This was retired once and asserted to answer 410. The attendance rewrite
   // brought it back — the page now loads, creates, updates and deletes through
   // it — so a 410 here would mean attendance is broken, not tidy.
-  const res = await api("/api/student/attendance-courses");
+  const res = await attendanceApi("/api/student/attendance-courses");
   assert.equal(res.status, 200);
   assert.ok(Array.isArray((await json(res))?.courses), "the page expects a courses array");
+});
+
+test("a tab opened before the pooling is told to reload, and nothing is read or written", async () => {
+  // No version header: exactly what a page loaded before the deploy sends.
+  const get = await api("/api/student/attendance-courses");
+  assert.equal(get.status, 409);
+  assert.match((await json(get))?.error ?? "", /reload/i);
+
+  const id = (await json(await saveCourse({ name: "Stale Tab", ...DLD_SHAPE })))?.course?.id;
+  assert.ok(id);
+
+  const oldTick = await api(`/api/student/attendance-courses/${id}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ set: { kind: "lab", index: 0, absent: true } }),
+  });
+  assert.equal(oldTick.status, 409, "the old tick format is refused");
+
+  // Even with the header, a lecture/lab `kind` is refused rather than half-applied.
+  const withKind = await attendanceApi(`/api/student/attendance-courses/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ set: { kind: "lab", index: 0, absent: true } }),
+  });
+  assert.equal(withKind.status, 400);
+
+  assert.equal((await api(`/api/student/attendance-courses/${id}`, { method: "DELETE" })).status, 409);
+
+  const doc = await (await getDb())
+    .collection("attendancecourses")
+    .findOne({ userId: await studentId(), name: "Stale Tab" });
+  assert.ok(doc, "the refused DELETE removed nothing");
+  assert.deepEqual(doc!.missed, [], "the refused ticks wrote nothing");
+});
+
+test("lectures and labs are one pool: 12 weeks of 2 + 1 gives 36 boxes", async () => {
+  const res = await saveCourse({ name: "Pool Test", ...DLD_SHAPE });
+  assert.equal(res.status, 200);
+  const course = (await json(res))?.course;
+  assert.deepEqual(course.missed, []);
+  assert.equal("missedLectures" in course, false, "the client never sees the old lists");
+
+  const last = await tick(course.id, 35);
+  assert.equal(last.status, 200, "box 36 of 36 exists");
+  assert.deepEqual((await json(last))?.course?.missed, [35]);
+  assert.equal((await tick(course.id, 36)).status, 400, "there is no box 37");
+
+  await tick(course.id, 35); // the same box twice is still one absence
+  assert.deepEqual((await json(await tick(course.id, 35, false)))?.course?.missed, []);
+
+  const doc = await (await getDb())
+    .collection("attendancecourses")
+    .findOne({ userId: await studentId(), name: "Pool Test" });
+  assert.deepEqual(doc!.missed, []);
+  assert.equal(doc!.missedLectures, undefined, "new courses never get the old lists");
+  assert.equal(doc!.missedLabs, undefined);
+  assert.equal(doc!.mergedFrom, undefined, "nothing was merged into a new course");
+});
+
+test("re-saving a course keeps its absences and trims only boxes past the new size", async () => {
+  const id = (await json(await saveCourse({ name: "Resave Test", ...DLD_SHAPE })))?.course?.id;
+  for (const index of [0, 1, 2, 30]) assert.equal((await tick(id, index)).status, 200);
+
+  // Same name, labs turned off: 24 boxes. Box 31 no longer exists; boxes 1-3 stay.
+  const resaved = (await json(await saveCourse({ name: "Resave Test", ...DLD_SHAPE, hasLab: false, labsPerWeek: 0 })))?.course;
+  assert.equal(resaved.id, id, "the same course was edited, not a second one created");
+  assert.equal(resaved.hasLab, false);
+  assert.deepEqual(resaved.missed, [0, 1, 2], "re-saving used to wipe these");
+
+  const list = await json(await attendanceApi("/api/student/attendance-courses"));
+  assert.deepEqual(list.courses.find((c: any) => c.id === id).missed, [0, 1, 2]);
+});
+
+test("clear unticks every box, and the old per-kind clear is refused", async () => {
+  const id = (await json(await saveCourse({ name: "Clear Test", ...DLD_SHAPE })))?.course?.id;
+  for (const index of [0, 1, 2]) await tick(id, index);
+
+  const bad = await attendanceApi(`/api/student/attendance-courses/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ clear: "lecture" }),
+  });
+  assert.equal(bad.status, 400);
+
+  const cleared = await attendanceApi(`/api/student/attendance-courses/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ clear: true }),
+  });
+  assert.deepEqual((await json(cleared))?.course?.missed, []);
+});
+
+test("a course saved the old way is shown pooled, and merged for real on its first tick", async () => {
+  // Lecture ticks unsorted, the way $addToSet left them.
+  await insertLegacyCourse("Legacy Test", [2, 0, 1], [0, 1]);
+  const db = await getDb();
+  const userId = await studentId();
+
+  const shown = (await json(await attendanceApi("/api/student/attendance-courses")))?.courses?.find(
+    (c: any) => c.name === "Legacy Test"
+  );
+  assert.deepEqual(shown.missed, [0, 1, 2, 3, 4], "3 lecture + 2 lab absences = 5");
+
+  const afterRead = await db.collection("attendancecourses").findOne({ userId, name: "Legacy Test" });
+  assert.equal(afterRead!.missed, undefined, "reading must not merge anything");
+
+  const ticked = await json(await tick(shown.id, 5));
+  assert.deepEqual(ticked?.course?.missed, [0, 1, 2, 3, 4, 5]);
+
+  const merged = await db.collection("attendancecourses").findOne({ userId, name: "Legacy Test" });
+  assert.deepEqual(merged!.missed, [0, 1, 2, 3, 4, 5]);
+  assert.equal(merged!.mergedFrom.lectures, 3);
+  assert.equal(merged!.mergedFrom.labs, 2);
+  assert.ok(merged!.mergedFrom.at instanceof Date);
+  assert.deepEqual(merged!.missedLectures, [2, 0, 1], "the old lists are kept exactly as they were");
+  assert.deepEqual(merged!.missedLabs, [0, 1]);
+});
+
+test("re-saving a course saved the old way merges it and keeps every absence", async () => {
+  await insertLegacyCourse("Legacy Resave", [0, 1, 2, 3], [0, 1]);
+
+  const course = (await json(await saveCourse({ name: "Legacy Resave", ...DLD_SHAPE })))?.course;
+  assert.deepEqual(course.missed, upTo(6), "4 lecture + 2 lab absences survive the save");
+
+  const doc = await (await getDb())
+    .collection("attendancecourses")
+    .findOne({ userId: await studentId(), name: "Legacy Resave" });
+  assert.deepEqual(doc!.missed, upTo(6));
+  assert.deepEqual({ lectures: doc!.mergedFrom.lectures, labs: doc!.mergedFrom.labs }, { lectures: 4, labs: 2 });
+});
+
+test("ten ticks racing on an unmerged course merge it once and lose none of them", async () => {
+  const _id = await insertLegacyCourse("Race Test", [0, 1], [0]);
+
+  // The merge fills boxes 0-2; these ten land on 3-12, all at the same moment.
+  const results = await Promise.all(upTo(10).map((i) => tick(String(_id), 3 + i)));
+  for (const r of results) assert.equal(r.status, 200);
+
+  const doc = await (await getDb()).collection("attendancecourses").findOne({ _id });
+  assert.deepEqual(
+    [...doc!.missed].sort((a: number, b: number) => a - b),
+    upTo(13),
+    "3 merged + 10 ticked: nothing lost, nothing doubled"
+  );
+  assert.deepEqual({ lectures: doc!.mergedFrom.lectures, labs: doc!.mergedFrom.labs }, { lectures: 2, labs: 1 });
 });
 
 test("the resource download redirect rejects a malformed id instead of crashing", async () => {
@@ -607,7 +799,7 @@ after(async () => {
   const db = await getDb();
   const user = await db.collection("users").findOne({ email: EMAIL });
   if (user) {
-    for (const c of ["events", "attendances", "midtermgrades"]) {
+    for (const c of ["events", "attendances", "attendancecourses", "midtermgrades"]) {
       await db.collection(c).deleteMany({ userId: user._id });
     }
     await db.collection("users").deleteOne({ _id: user._id });
